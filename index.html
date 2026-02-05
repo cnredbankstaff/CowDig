@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en" class="h-full">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cow Dig</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/_sdk/element_sdk.js"></script>
+  <style>
+    body {
+      box-sizing: border-box;
+    }
+    @keyframes inflate {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.3); }
+    }
+    @keyframes dig-particle {
+      0% { opacity: 1; transform: scale(1); }
+      100% { opacity: 0; transform: scale(0) translateY(-10px); }
+    }
+    .inflating {
+      animation: inflate 0.3s ease-in-out;
+    }
+    .dig-particle {
+      animation: dig-particle 0.4s ease-out forwards;
+    }
+  </style>
+  <style>@view-transition { navigation: auto; }</style>
+  <script src="/_sdk/data_sdk.js" type="text/javascript"></script>
+ </head>
+ <body class="h-full bg-gradient-to-b from-sky-400 to-sky-300 overflow-hidden">
+  <div id="app" class="h-full flex flex-col items-center justify-center p-4"><!-- Title -->
+   <h1 id="game-title" class="text-4xl md:text-5xl font-black text-white drop-shadow-lg mb-4" style="font-family: 'Fredoka One', cursive, sans-serif;">🐄 Cow Dig 🐄</h1><!-- Score & Lives -->
+   <div class="flex gap-8 mb-4 text-white font-bold text-lg">
+    <div class="bg-amber-600 px-4 py-2 rounded-full shadow-lg">
+     Score: <span id="score">0</span>
+    </div>
+    <div class="bg-red-500 px-4 py-2 rounded-full shadow-lg">
+     Lives: <span id="lives">3</span>
+    </div>
+    <div class="bg-emerald-600 px-4 py-2 rounded-full shadow-lg">
+     Level: <span id="level">1</span>
+    </div>
+   </div><!-- Game Canvas -->
+   <div id="game-container" class="relative bg-amber-800 rounded-lg shadow-2xl border-4 border-amber-900 overflow-hidden" style="width: 480px; height: 400px;"><!-- Game will be rendered here -->
+   </div><!-- Controls Info -->
+   <div class="mt-4 text-white text-center">
+    <p class="font-bold mb-2">Controls</p>
+    <p class="text-sm opacity-90">Arrow Keys / WASD to move | SPACE to pump</p>
+    <p class="text-xs opacity-75 mt-1">Dig tunnels and inflate cows to pop them!</p>
+   </div><!-- Start Screen Overlay -->
+   <div id="start-screen" class="absolute inset-0 bg-black/70 flex flex-col items-center justify-center z-20">
+    <div class="text-6xl mb-4">
+     🐄
+    </div>
+    <h2 class="text-4xl font-black text-white mb-4">COW DIG</h2>
+    <p class="text-white mb-6 text-center px-4">Dig through the dirt and inflate<br>
+     the cows until they pop!</p><button id="start-btn" class="bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 px-8 rounded-full text-xl shadow-lg transition-all hover:scale-105"> START GAME </button>
+   </div><!-- Game Over Overlay -->
+   <div id="gameover-screen" class="absolute inset-0 bg-black/70 flex-col items-center justify-center z-20 hidden">
+    <div class="text-6xl mb-4">
+     💀
+    </div>
+    <h2 class="text-4xl font-black text-red-500 mb-2">GAME OVER</h2>
+    <p class="text-white text-2xl mb-6">Final Score: <span id="final-score">0</span></p><button id="restart-btn" class="bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 px-8 rounded-full text-xl shadow-lg transition-all hover:scale-105"> PLAY AGAIN </button>
+   </div>
+  </div>
+  <script>
+    // Config
+    const defaultConfig = {
+      game_title: "🐄 Cow Dig 🐄"
+    };
+    let config = { ...defaultConfig };
+
+    // Element SDK Setup
+    window.elementSdk.init({
+      defaultConfig,
+      onConfigChange: async (newConfig) => {
+        config = { ...defaultConfig, ...newConfig };
+        document.getElementById('game-title').textContent = config.game_title;
+      },
+      mapToCapabilities: () => ({
+        recolorables: [],
+        borderables: [],
+        fontEditable: undefined,
+        fontSizeable: undefined
+      }),
+      mapToEditPanelValues: (cfg) => new Map([
+        ["game_title", cfg.game_title || defaultConfig.game_title]
+      ])
+    });
+
+    // Game Constants
+    const TILE_SIZE = 20;
+    const GRID_WIDTH = 24;
+    const GRID_HEIGHT = 20;
+    const GRASS_ROWS = 2;
+
+    // Game State
+    let gameState = {
+      player: { x: 12, y: 1, direction: 'right', pumping: false, pumpTarget: null },
+      cows: [],
+      grid: [],
+      score: 0,
+      lives: 3,
+      level: 1,
+      gameRunning: false,
+      gameOver: false
+    };
+
+    // Initialize Grid
+    function initGrid() {
+      gameState.grid = [];
+      for (let y = 0; y < GRID_HEIGHT; y++) {
+        const row = [];
+        for (let x = 0; x < GRID_WIDTH; x++) {
+          if (y < GRASS_ROWS) {
+            row.push('air');
+          } else {
+            row.push('dirt');
+          }
+        }
+        gameState.grid.push(row);
+      }
+      // Clear starting area
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = 0; dy <= 1; dy++) {
+          const nx = gameState.player.x + dx;
+          const ny = GRASS_ROWS + dy;
+          if (nx >= 0 && nx < GRID_WIDTH && ny < GRID_HEIGHT) {
+            gameState.grid[ny][nx] = 'tunnel';
+          }
+        }
+      }
+    }
+
+    // Spawn Cows
+    function spawnCows() {
+      gameState.cows = [];
+      const numCows = Math.min(3 + gameState.level, 8);
+      for (let i = 0; i < numCows; i++) {
+        let x, y, valid;
+        do {
+          x = Math.floor(Math.random() * (GRID_WIDTH - 4)) + 2;
+          y = Math.floor(Math.random() * (GRID_HEIGHT - GRASS_ROWS - 2)) + GRASS_ROWS + 2;
+          valid = Math.abs(x - gameState.player.x) > 4 || Math.abs(y - gameState.player.y) > 4;
+          for (const cow of gameState.cows) {
+            if (Math.abs(x - cow.x) < 3 && Math.abs(y - cow.y) < 3) valid = false;
+          }
+        } while (!valid);
+        
+        // Clear area around cow
+        gameState.grid[y][x] = 'tunnel';
+        
+        gameState.cows.push({
+          x, y,
+          direction: Math.random() > 0.5 ? 'left' : 'right',
+          inflation: 0,
+          moveTimer: 0,
+          speed: Math.max(30 - gameState.level * 2, 15)
+        });
+      }
+    }
+
+    // Render Game
+    function render() {
+      const container = document.getElementById('game-container');
+      container.innerHTML = '';
+      
+      // Render grid
+      for (let y = 0; y < GRID_HEIGHT; y++) {
+        for (let x = 0; x < GRID_WIDTH; x++) {
+          const tile = document.createElement('div');
+          tile.className = 'absolute';
+          tile.style.left = `${x * TILE_SIZE}px`;
+          tile.style.top = `${y * TILE_SIZE}px`;
+          tile.style.width = `${TILE_SIZE}px`;
+          tile.style.height = `${TILE_SIZE}px`;
+          
+          const cellType = gameState.grid[y][x];
+          if (y < GRASS_ROWS && cellType === 'air') {
+            tile.style.background = 'linear-gradient(to bottom, #7dd3fc, #38bdf8)';
+          } else if (cellType === 'dirt') {
+            const shade = (x + y) % 2 === 0 ? '#92400e' : '#78350f';
+            tile.style.background = shade;
+            // Add rock sprites randomly
+            if ((x * 7 + y * 13) % 11 === 0) {
+              tile.innerHTML = '<div style="width:6px;height:6px;background:#6b7280;border-radius:50%;margin:7px auto;"></div>';
+            }
+          } else if (cellType === 'tunnel') {
+            tile.style.background = '#451a03';
+          }
+          container.appendChild(tile);
+        }
+      }
+      
+      // Render grass layer
+      for (let x = 0; x < GRID_WIDTH; x++) {
+        if (gameState.grid[GRASS_ROWS][x] === 'dirt') {
+          const grass = document.createElement('div');
+          grass.className = 'absolute';
+          grass.style.left = `${x * TILE_SIZE}px`;
+          grass.style.top = `${(GRASS_ROWS - 1) * TILE_SIZE + 12}px`;
+          grass.style.fontSize = '14px';
+          grass.innerHTML = '🌱';
+          container.appendChild(grass);
+        }
+      }
+      
+      // Render cows
+      for (const cow of gameState.cows) {
+        const cowEl = document.createElement('div');
+        cowEl.className = 'absolute flex items-center justify-center transition-transform';
+        cowEl.style.left = `${cow.x * TILE_SIZE - 4}px`;
+        cowEl.style.top = `${cow.y * TILE_SIZE - 4}px`;
+        cowEl.style.width = `${TILE_SIZE + 8}px`;
+        cowEl.style.height = `${TILE_SIZE + 8}px`;
+        cowEl.style.fontSize = `${18 + cow.inflation * 4}px`;
+        cowEl.style.transform = `scaleX(${cow.direction === 'left' ? -1 : 1}) scale(${1 + cow.inflation * 0.15})`;
+        cowEl.style.filter = cow.inflation > 0 ? `hue-rotate(${cow.inflation * 30}deg) saturate(${1 + cow.inflation * 0.5})` : '';
+        cowEl.style.zIndex = '10';
+        if (cow.inflation > 0) cowEl.classList.add('inflating');
+        cowEl.textContent = '🐄';
+        container.appendChild(cowEl);
+      }
+      
+      // Render player
+      const playerEl = document.createElement('div');
+      playerEl.className = 'absolute flex items-center justify-center';
+      playerEl.style.left = `${gameState.player.x * TILE_SIZE - 2}px`;
+      playerEl.style.top = `${gameState.player.y * TILE_SIZE - 2}px`;
+      playerEl.style.width = `${TILE_SIZE + 4}px`;
+      playerEl.style.height = `${TILE_SIZE + 4}px`;
+      playerEl.style.fontSize = '20px';
+      playerEl.style.transform = `scaleX(${gameState.player.direction === 'left' ? -1 : 1})`;
+      playerEl.style.zIndex = '15';
+      playerEl.textContent = gameState.player.pumping ? '🧑‍🌾' : '🚶';
+      container.appendChild(playerEl);
+      
+      // Render pump hose if pumping
+      if (gameState.player.pumping && gameState.player.pumpTarget) {
+        const hose = document.createElement('div');
+        hose.style.position = 'absolute';
+        hose.style.left = `${Math.min(gameState.player.x, gameState.player.pumpTarget.x) * TILE_SIZE + TILE_SIZE/2}px`;
+        hose.style.top = `${Math.min(gameState.player.y, gameState.player.pumpTarget.y) * TILE_SIZE + TILE_SIZE/2}px`;
+        hose.style.width = `${Math.abs(gameState.player.pumpTarget.x - gameState.player.x) * TILE_SIZE + 4}px`;
+        hose.style.height = `${Math.abs(gameState.player.pumpTarget.y - gameState.player.y) * TILE_SIZE + 4}px`;
+        hose.style.border = '3px dashed #fbbf24';
+        hose.style.borderRadius = '4px';
+        hose.style.zIndex = '5';
+        container.appendChild(hose);
+      }
+      
+      // Update UI
+      document.getElementById('score').textContent = gameState.score;
+      document.getElementById('lives').textContent = gameState.lives;
+      document.getElementById('level').textContent = gameState.level;
+    }
+
+    // Move Player
+    function movePlayer(dx, dy) {
+      if (!gameState.gameRunning || gameState.gameOver) return;
+      
+      const newX = gameState.player.x + dx;
+      const newY = gameState.player.y + dy;
+      
+      if (newX < 0 || newX >= GRID_WIDTH || newY < 0 || newY >= GRID_HEIGHT) return;
+      
+      // Update direction
+      if (dx !== 0) gameState.player.direction = dx > 0 ? 'right' : 'left';
+      
+      // Dig if in dirt
+      if (gameState.grid[newY][newX] === 'dirt') {
+        gameState.grid[newY][newX] = 'tunnel';
+        gameState.score += 5;
+      }
+      
+      gameState.player.x = newX;
+      gameState.player.y = newY;
+      gameState.player.pumping = false;
+      gameState.player.pumpTarget = null;
+      
+      checkCollision();
+    }
+
+    // Pump action
+    function pump() {
+      if (!gameState.gameRunning || gameState.gameOver) return;
+      
+      // Find nearby cow
+      const directions = [
+        { dx: 1, dy: 0 }, { dx: -1, dy: 0 },
+        { dx: 0, dy: 1 }, { dx: 0, dy: -1 }
+      ];
+      
+      for (const cow of gameState.cows) {
+        const dist = Math.abs(cow.x - gameState.player.x) + Math.abs(cow.y - gameState.player.y);
+        if (dist <= 3) {
+          gameState.player.pumping = true;
+          gameState.player.pumpTarget = cow;
+          cow.inflation++;
+          
+          if (cow.inflation >= 4) {
+            // Pop the cow!
+            gameState.score += 100 * gameState.level;
+            gameState.cows = gameState.cows.filter(c => c !== cow);
+            gameState.player.pumping = false;
+            gameState.player.pumpTarget = null;
+            
+            // Check level complete
+            if (gameState.cows.length === 0) {
+              nextLevel();
+            }
+          }
+          return;
+        }
+      }
+    }
+
+    // Check collision with cows
+    function checkCollision() {
+      for (const cow of gameState.cows) {
+        if (cow.x === gameState.player.x && cow.y === gameState.player.y) {
+          loseLife();
+          return;
+        }
+      }
+    }
+
+    // Lose a life
+    function loseLife() {
+      gameState.lives--;
+      if (gameState.lives <= 0) {
+        endGame();
+      } else {
+        // Reset player position
+        gameState.player.x = 12;
+        gameState.player.y = 1;
+      }
+    }
+
+    // Move cows
+    function moveCows() {
+      for (const cow of gameState.cows) {
+        cow.moveTimer++;
+        
+        // Deflate over time
+        if (cow.inflation > 0 && cow.moveTimer % 60 === 0) {
+          cow.inflation = Math.max(0, cow.inflation - 1);
+        }
+        
+        if (cow.moveTimer < cow.speed) continue;
+        cow.moveTimer = 0;
+        
+        // Inflated cows move slower
+        if (cow.inflation > 0 && Math.random() > 0.3) continue;
+        
+        // AI: Move toward player through tunnels
+        const directions = [
+          { dx: 1, dy: 0 }, { dx: -1, dy: 0 },
+          { dx: 0, dy: 1 }, { dx: 0, dy: -1 }
+        ];
+        
+        // Sort by distance to player
+        directions.sort((a, b) => {
+          const distA = Math.abs((cow.x + a.dx) - gameState.player.x) + Math.abs((cow.y + a.dy) - gameState.player.y);
+          const distB = Math.abs((cow.x + b.dx) - gameState.player.x) + Math.abs((cow.y + b.dy) - gameState.player.y);
+          return distA - distB;
+        });
+        
+        // Add randomness
+        if (Math.random() < 0.3) {
+          directions.sort(() => Math.random() - 0.5);
+        }
+        
+        for (const dir of directions) {
+          const newX = cow.x + dir.dx;
+          const newY = cow.y + dir.dy;
+          
+          if (newX < 0 || newX >= GRID_WIDTH || newY < 0 || newY >= GRID_HEIGHT) continue;
+          
+          // Cows can move through tunnels, and sometimes dig
+          if (gameState.grid[newY][newX] === 'tunnel' || 
+              (gameState.grid[newY][newX] === 'dirt' && Math.random() < 0.1)) {
+            if (gameState.grid[newY][newX] === 'dirt') {
+              gameState.grid[newY][newX] = 'tunnel';
+            }
+            cow.x = newX;
+            cow.y = newY;
+            cow.direction = dir.dx !== 0 ? (dir.dx > 0 ? 'right' : 'left') : cow.direction;
+            break;
+          }
+        }
+      }
+      
+      checkCollision();
+    }
+
+    // Next level
+    function nextLevel() {
+      gameState.level++;
+      gameState.player.x = 12;
+      gameState.player.y = 1;
+      initGrid();
+      spawnCows();
+    }
+
+    // End game
+    function endGame() {
+      gameState.gameOver = true;
+      gameState.gameRunning = false;
+      document.getElementById('final-score').textContent = gameState.score;
+      document.getElementById('gameover-screen').classList.remove('hidden');
+      document.getElementById('gameover-screen').classList.add('flex');
+    }
+
+    // Start game
+    function startGame() {
+      gameState = {
+        player: { x: 12, y: 1, direction: 'right', pumping: false, pumpTarget: null },
+        cows: [],
+        grid: [],
+        score: 0,
+        lives: 3,
+        level: 1,
+        gameRunning: true,
+        gameOver: false
+      };
+      initGrid();
+      spawnCows();
+      document.getElementById('start-screen').classList.add('hidden');
+      document.getElementById('gameover-screen').classList.add('hidden');
+      document.getElementById('gameover-screen').classList.remove('flex');
+    }
+
+    // Game loop
+    let lastTime = 0;
+    function gameLoop(timestamp) {
+      if (gameState.gameRunning && !gameState.gameOver) {
+        moveCows();
+      }
+      render();
+      setTimeout(() => requestAnimationFrame(gameLoop), 50);
+    }
+
+    // Input handling
+    document.addEventListener('keydown', (e) => {
+      if (!gameState.gameRunning) return;
+      
+      switch(e.key) {
+        case 'ArrowUp':
+        case 'w':
+        case 'W':
+          e.preventDefault();
+          movePlayer(0, -1);
+          break;
+        case 'ArrowDown':
+        case 's':
+        case 'S':
+          e.preventDefault();
+          movePlayer(0, 1);
+          break;
+        case 'ArrowLeft':
+        case 'a':
+        case 'A':
+          e.preventDefault();
+          movePlayer(-1, 0);
+          break;
+        case 'ArrowRight':
+        case 'd':
+        case 'D':
+          e.preventDefault();
+          movePlayer(1, 0);
+          break;
+        case ' ':
+          e.preventDefault();
+          pump();
+          break;
+      }
+    });
+
+    // Button handlers
+    document.getElementById('start-btn').addEventListener('click', startGame);
+    document.getElementById('restart-btn').addEventListener('click', startGame);
+
+    // Initialize
+    initGrid();
+    render();
+    requestAnimationFrame(gameLoop);
+  </script>
+ <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9c9654ab369b5e6a',t:'MTc3MDMzNTY0My4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
